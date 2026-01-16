@@ -330,7 +330,7 @@ class TauGreenAgentExecutor(AgentExecutor):
         raise NotImplementedError
 
 
-def start_green_agent(agent_name="tau2_green_agent", host="localhost", port=9001):
+def start_green_agent(agent_name="tau2_green_agent", host="0.0.0.0", port=9001):
     """
     Start the green agent.
 

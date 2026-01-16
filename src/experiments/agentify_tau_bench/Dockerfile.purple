@@ -1,4 +1,4 @@
-# Dockerfile for tau2-bench Green Agent (Hospitality Domain)
+# Dockerfile for tau2-bench Purple Agent (Baseline LLM Agent)
 FROM python:3.11-slim
 
 WORKDIR /app
@@ -24,15 +24,13 @@ RUN uv sync
 # Set environment variables
 ENV PYTHONPATH=/app/src:/app/src/experiments/agentify_tau_bench/src
 ENV TAU2_DATA_DIR=/app/data
-
-# Expose ports for green and white agents
-EXPOSE 9001 9002
-
-# Environment variables for agent configuration
-ENV ROLE=green
+ENV ROLE=white
 ENV HOST=0.0.0.0
-ENV AGENT_PORT=9001
-ENV AGENT_URL=http://localhost:9001
+ENV AGENT_PORT=9002
+ENV AGENT_URL=http://localhost:9002
 
-# Default command: start the green agent
-CMD ["uv", "run", "tau-bench-agent", "green"]
+# Expose port for purple agent
+EXPOSE 9002
+
+# Default command: start the purple (white) agent
+CMD ["uv", "run", "tau-bench-agent", "white"]

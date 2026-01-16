@@ -84,7 +84,7 @@ class GeneralWhiteAgentExecutor(AgentExecutor):
         raise NotImplementedError
 
 
-def start_white_agent(agent_name="general_white_agent", host="localhost", port=9002):
+def start_white_agent(agent_name="general_white_agent", host="0.0.0.0", port=9002):
     logger.info("Starting white agent...")
     # url = f"http://{host}:{port}"
     card = prepare_white_agent_card(os.getenv("AGENT_URL"))
