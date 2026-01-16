@@ -67,6 +67,18 @@ tau2 run --domain hospitality --task-ids hospitality_007_hidden_allergy hospital
 tau2 run --domain hospitality --task-split base --agent-llm gpt-4o
 ```
 
+### Docker (AgentBeats Green Agent)
+
+Build and run as an A2A-compatible Green Agent:
+
+```bash
+# From tau2-bench root directory
+docker build -f src/experiments/agentify_tau_bench/Dockerfile -t tau2-hospitality .
+
+# Run Green Agent on port 9001
+docker run -e OPENAI_API_KEY=your_key -p 9001:9001 tau2-hospitality:latest
+```
+
 ## 6. Design Philosophy
 
 > *"The future of Agentic AI isn't just bigger models; it's better architecture."*
