@@ -63,6 +63,20 @@ The system uses two types of agents:
 uv sync
 ```
 
+## Docker Build & Run (End-to-End)
+
+Build and run the Green Agent with Docker:
+
+```bash
+# From the tau2-bench root directory
+docker build -f src/experiments/agentify_tau_bench/Dockerfile -t tau2-hospitality .
+
+# Run the Green Agent
+docker run -e OPENAI_API_KEY=your_key_here -p 9001:9001 tau2-hospitality:latest
+```
+
+The Green Agent will be available at `http://localhost:9001`.
+
 ## Configuration
 
 Create a `.env` file with your API keys:
