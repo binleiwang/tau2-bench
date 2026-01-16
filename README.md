@@ -60,6 +60,7 @@ Domains are:
 - `airline`
 - `retail`
 - `telecom`
+- `hospitality` (New!): A high-fidelity restaurant simulation focusing on safety protocols, RBAC, and complex policy constraints. [Read Documentation](src/tau2/domains/hospitality/README.md)
 
 All the information that an agent developer needs to build an agent for a domain can be accessed through the domain's API docs. See [View domain documentation](#view-domain-documentation) for more details.
 
