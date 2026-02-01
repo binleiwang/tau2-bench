@@ -37,23 +37,17 @@ This domain simulates a Chinese hot pot restaurant (Berkeley Hot Pot), testing a
 
 ## Domain Features
 
-### Food Safety Testing
+### High-Stakes Decision Making
+Agents must prioritize safety and liability over customer satisfaction. For example, strictly enforcing allergy protocols (e.g., verifying hidden allergens) even when customers insist otherwise.
 
-Agents must handle allergy inquiries with appropriate caution. Soup bases may contain hidden allergens (e.g., vinegar in tomato-based soups). The `check_allergy_safety` tool returns safety status; agents must recommend Plain Water when safety cannot be guaranteed.
+### Hierarchical Reasoning & Escalation
+Simulates real-world organizational constraints where agents must judge their authority limits. Agents must decide whether to resolve issues independently (e.g., small discounts) or escalate to management, mirroring role-based access control.
 
-### Role-Based Access Control
+### Investigation-First SOPs
+Prevents hallucination by requiring agents to verify facts via tools before taking action. For instance, an agent must check the kitchen status or bill details *before* offering apologies or compensation.
 
-Staff roles have explicit authority limits:
-- **Server**: Max 12% discount, $10 complimentary limit
-- **Manager**: Full authority
-
-Agents must recognize when to escalate rather than exceed their authority.
-
-### Operational Constraints
-
-- **Table capacity**: Standard, expansion, and squeeze limits per table type
-- **Reservation policies**: Max 20 guests on weekends/holidays; 10-minute hold time
-- **Temporal rules**: Lunch specials unavailable on federal holidays
+### Deterministic Evaluation
+All 116 tasks are scored via verifiable actions (tool calls) and database state assertions, ensuring reproducible results without relying on unstable LLM-as-judge metrics.
 
 ## Task Categories
 
