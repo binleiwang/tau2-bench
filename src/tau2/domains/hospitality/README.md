@@ -101,6 +101,16 @@ Tasks are evaluated using:
 
 No LLM-as-judge; all evaluations are deterministic.
 
+## Model Performance
+
+Baseline results on the 11-task `base` split:
+
+| Model | Pass Rate | Avg Reward | Avg Cost/Conv |
+|-------|-----------|------------|---------------|
+| GPT-4o-mini | 63.6% | 0.636 | $0.004 |
+
+*Evaluated with `--max-concurrency 1` on 2026-01-31.*
+
 ## Files
 
 ```
