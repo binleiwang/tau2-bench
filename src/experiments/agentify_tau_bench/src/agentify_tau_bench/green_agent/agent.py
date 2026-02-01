@@ -84,30 +84,70 @@ class EnvConfig(BaseModel):
     )
 
 
-def get_green_agent_config(user_input: str) -> tuple[str, EnvConfig]:
+class EvalRequest(BaseModel):
+    """AgentBeats evaluation request format."""
+    participants: dict[str, str]  # {"agent": "http://..."}
+    config: dict  # {"domain": "hospitality", "max_steps": 100, ...}
+
+
+def get_green_agent_config(user_input: str) -> tuple[str, str, EnvConfig]:
     """
     Get the green agent configuration from the user input.
+    Supports AgentBeats JSON format: {"participants": {...}, "config": {...}}
 
     Args:
-        user_input: The user input string.
+        user_input: The user input string (JSON format from AgentBeats).
 
     Returns:
-        A tuple containing the white agent URL and the environment configuration.
+        A tuple containing (white_agent_url, agent_name, env_config).
     """
-    tags = parse_tags(user_input)
+    num_tasks = None  # Will be set if AgentBeats format is used
+    agent_name = "unknown_agent"  # Default agent name
+    
     try:
-        white_agent_url = tags["white_agent_url"]
+        # Parse AgentBeats JSON format
+        request = EvalRequest.model_validate_json(user_input)
+        
+        # Get white agent URL and name from participants
+        # AgentBeats uses participant name as the role name
+        white_agent_url = None
+        for role, url in request.participants.items():
+            agent_name = role  # The key is the agent name
+            white_agent_url = str(url)
+            break  # Use the first participant as the white agent
+        
+        if not white_agent_url:
+            raise ValueError("No participant found in request")
+        
+        # Get num_tasks limit
+        num_tasks = request.config.get("num_tasks")
+        
+        # Build EnvConfig from config dict
+        env_config = EnvConfig(
+            domain=request.config.get("domain", "hospitality"),
+            task_ids=request.config.get("task_ids"),
+            max_steps=request.config.get("max_steps", 100),
+            user_llm=request.config.get("user_llm"),
+            user_llm_args=request.config.get("user_llm_args"),
+        )
+        
     except Exception as e:
-        raise ValueError(f"Error parsing white agent URL: {e}")
+        # Fallback to legacy tag-based format for backward compatibility
+        logger.warning(f"Failed to parse AgentBeats format, trying legacy format: {e}")
+        tags = parse_tags(user_input)
+        try:
+            white_agent_url = tags["white_agent_url"]
+        except Exception as e:
+            raise ValueError(f"Error parsing white agent URL: {e}")
 
-    try:
-        env_config_json = tags["env_config"]
-    except Exception as e:
-        raise ValueError(f"Error parsing env config: {e}")
-    try:
-        env_config = EnvConfig.model_validate_json(env_config_json)
-    except Exception as e:
-        raise ValueError(f"Error parsing environment config: {e}")
+        try:
+            env_config_json = tags["env_config"]
+        except Exception as e:
+            raise ValueError(f"Error parsing env config: {e}")
+        try:
+            env_config = EnvConfig.model_validate_json(env_config_json)
+        except Exception as e:
+            raise ValueError(f"Error parsing environment config: {e}")
 
     if env_config.task_ids is None:
         env_config.task_ids = get_task_ids(domain=env_config.domain, task_ids=None)
@@ -115,8 +155,13 @@ def get_green_agent_config(user_input: str) -> tuple[str, EnvConfig]:
         env_config.task_ids = get_task_ids(
             domain=env_config.domain, task_ids=env_config.task_ids
         )
+    
+    # Apply num_tasks limit if specified
+    if num_tasks is not None and isinstance(num_tasks, int):
+        logger.info(f"Limiting to {num_tasks} tasks (from {len(env_config.task_ids)} total)")
+        env_config.task_ids = env_config.task_ids[:num_tasks]
 
-    return white_agent_url, env_config
+    return white_agent_url, agent_name, env_config
 
 
 async def ask_agent_to_solve(
@@ -265,10 +310,25 @@ class TauGreenAgentExecutor(AgentExecutor):
         self.semaphore = asyncio.Semaphore(CONCURRENCY_LIMIT)
 
     async def execute(self, context: RequestContext, event_queue: EventQueue) -> None:
+        from a2a.server.tasks import TaskUpdater
+        from a2a.types import DataPart, Part, TaskState, TextPart
+        from a2a.utils import new_task
+        
         # parse the task
         logger.info("Green agent: Received a task, parsing...")
         user_input = context.get_user_input()
-        white_agent_url, env_config = get_green_agent_config(user_input)
+        white_agent_url, agent_name, env_config = get_green_agent_config(user_input)
+        logger.info(f"Green agent: Evaluating agent '{agent_name}'")
+
+        # Create task and updater for progress tracking
+        msg = context.message
+        task = context.current_task
+        if not task:
+            task = new_task(msg)
+            await event_queue.enqueue_event(task)
+        
+        updater = TaskUpdater(event_queue, task.id, task.context_id)
+        await updater.start_work()
 
         # set up the environment
         logger.info("Green agent: Setting up the environment...")
@@ -276,14 +336,27 @@ class TauGreenAgentExecutor(AgentExecutor):
         logger.info(
             f"Green agent: Environment configuration: {env_config.model_dump_json(indent=2)}"
         )
+        
+        await updater.update_status(
+            TaskState.working,
+            new_agent_text_message(f"Starting evaluation of {len(env_config.task_ids)} tasks in {env_config.domain} domain")
+        )
+        
         logger.info("Green agent: Starting evaluation...")
         metrics = {"info": {}, "tasks": {}}
         timestamp_started = time.time()
+        completed_count = 0
 
         async def run_one_task(task_id: str) -> None:
+            nonlocal completed_count
             async with self.semaphore:
                 try:
                     logger.info(f"Green agent: Running task {task_id}...")
+                    await updater.update_status(
+                        TaskState.working,
+                        new_agent_text_message(f"Running task {task_id}...")
+                    )
+                    
                     task_env_config = {
                         "domain": env_config.domain,
                         "task_id": task_id,
@@ -304,27 +377,63 @@ class TauGreenAgentExecutor(AgentExecutor):
                             f"Green agent: Task {task_id} returned None or missing reward_info"
                         )
                         metrics["tasks"][task_id] = 0
+                    
+                    completed_count += 1
+                    await updater.update_status(
+                        TaskState.working,
+                        new_agent_text_message(f"Completed task {task_id} ({completed_count}/{len(env_config.task_ids)})")
+                    )
                 except Exception as e:
                     logger.error(f"Green agent: Error running task {task_id}: {e}")
-                    metrics["tasks"][
-                        task_id
-                    ] = -1  # TODO: This is just a placeholder, we need to handle this properly
+                    metrics["tasks"][task_id] = 0
+                    completed_count += 1
 
-        tasks = [run_one_task(task_id) for task_id in env_config.task_ids]
-        logger.info(f"Green agent: Running {len(tasks)} tasks...")
-        await asyncio.gather(*tasks)
+        # Run tasks sequentially to avoid overwhelming the system
+        for task_id in env_config.task_ids:
+            await run_one_task(task_id)
 
-        metrics["info"]["time_used"] = time.time() - timestamp_started
-        metrics["info"]["success"] = all(
-            metrics["tasks"][task_id] == 1 for task_id in env_config.task_ids
+        time_used = time.time() - timestamp_started
+        total_reward = sum(metrics["tasks"].values())
+        num_completed = len(metrics["tasks"])
+        pass_rate = (total_reward / num_completed * 100) if num_completed > 0 else 0
+
+        # Build result data in AgentBeats format
+        # IMPORTANT: 'agent' field is required for leaderboard queries
+        result_data = {
+            "agent": agent_name,
+            "domain": env_config.domain,
+            "score": total_reward,
+            "max_score": num_completed,
+            "pass_rate": pass_rate,
+            "task_rewards": metrics["tasks"],
+            "time_used": time_used,
+        }
+
+        task_results_str = "\n".join(
+            f"  {tid}: {'✓' if reward == 1.0 else '✗'} ({reward})"
+            for tid, reward in metrics["tasks"].items()
         )
+        summary = f"""Tau2 Benchmark Results
+Domain: {env_config.domain}
+Tasks: {num_completed}
+Pass Rate: {pass_rate:.1f}% ({int(total_reward)}/{num_completed})
+Time: {time_used:.1f}s
+
+Task Results:
+{task_results_str}"""
 
         logger.info("Green agent: Evaluation complete.")
-        await event_queue.enqueue_event(
-            new_agent_text_message(
-                f"Finished. White agent success: {metrics['info']['success']}\nMetrics: {json.dumps(metrics, indent=2)}\n"
-            )
-        )  # alternative, impl as a task-generating agent
+        
+        # Add artifact with results
+        await updater.add_artifact(
+            parts=[
+                Part(root=TextPart(text=summary)),
+                Part(root=DataPart(data=result_data)),
+            ],
+            name="Result",
+        )
+        
+        await updater.complete()
 
     async def cancel(self, context: RequestContext, event_queue: EventQueue) -> None:
         raise NotImplementedError

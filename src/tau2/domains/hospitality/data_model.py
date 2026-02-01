@@ -80,7 +80,20 @@ class IncidentType(str, Enum):
     CAKE_DAMAGE = "cake_damage"
     PROPERTY_DAMAGE = "property_damage"
     RESERVATION_ISSUE = "reservation_issue"
+    FOOD_SAFETY = "food_safety"
     OTHER = "other"
+
+
+class KitchenStatus(str, Enum):
+    """Kitchen operational status for testing internal coordination scenarios."""
+
+    NORMAL = "normal"  # Kitchen operating normally
+    ORDER_OVERLOAD = "order_overload"  # Too many orders, long wait times
+    UNDERSTAFFED = "understaffed"  # Short on staff
+    EQUIPMENT_FAILURE = "equipment_failure"  # Equipment broken
+    STAFF_ATTITUDE = "staff_attitude"  # Staff being uncooperative/rude
+    STAFF_WALKOUT = "staff_walkout"  # Staff quit mid-shift
+    PRINTER_ERROR = "printer_error"  # Order printer malfunction
 
 
 # ============== Data Models ==============
@@ -210,9 +223,12 @@ class Order(BaseModelNoExtra):
 
     order_id: str = Field(description="Unique order ID")
     table_id: str = Field(description="Table ID")
+    party_size: int = Field(default=1, description="Number of guests (used for sauce bar charge $2/person)")
+    has_member: bool = Field(default=False, description="Whether table has a linked member account")
     customer_id: Optional[str] = Field(default=None)
     items: List[OrderItem] = Field(default_factory=list)
     subtotal: float = Field(default=0.0)
+    sauce_bar_charge: float = Field(default=0.0, description="Sauce bar charge = party_size * $2")
     discount_applied: Optional[str] = Field(default=None)
     discount_amount: float = Field(default=0.0)
     tax: float = Field(default=0.0)
@@ -263,6 +279,9 @@ class Promotion(BaseModelNoExtra):
     valid_until: str
     sms_text: Optional[str] = Field(
         default=None, description="SMS text sent to customer"
+    )
+    missing_terms_in_sms: Optional[str] = Field(
+        default=None, description="Terms that were omitted in SMS (company error)"
     )
 
 
@@ -354,6 +373,11 @@ class HospitalityDB(DB):
     allergy_checks_made: List[Dict[str, Any]] = Field(
         default_factory=list, description="Record of allergy safety checks"
     )
+    
+    # Customer SMS promotion claim (for verification)
+    customer_sms_claim: Optional[Dict[str, Any]] = Field(
+        default=None, description="SMS promotion claim from customer for verification"
+    )
     unsafe_recommendation_made: bool = Field(
         default=False, description="True if agent confirmed unsafe item as safe"
     )
@@ -365,6 +389,99 @@ class HospitalityDB(DB):
     order_expedited: bool = Field(default=False)
     dish_remade: bool = Field(default=False)
     table_changed: bool = Field(default=False)
+
+    # ============== Membership Tracking ==============
+    # These fields track membership promotion behavior
+    
+    membership_checked: bool = Field(
+        default=False,
+        description="Whether agent checked if table has member"
+    )
+    membership_offered: bool = Field(
+        default=False,
+        description="Whether agent offered membership signup"
+    )
+    customer_mood: str = Field(
+        default="normal",
+        description="Customer mood: normal, upset, rushing, celebrating"
+    )
+    mood_explicitly_set: bool = Field(
+        default=False,
+        description="Internal flag: True if set_customer_mood was explicitly called (enables membership testing)"
+    )
+
+    # ============== Kitchen Coordination Tracking ==============
+    # These fields support testing internal coordination scenarios
+    
+    # Kitchen state (set in initial_state for variant tasks)
+    kitchen_status: str = Field(
+        default="normal", 
+        description="Current kitchen operational status"
+    )
+    kitchen_response: str = Field(
+        default="", 
+        description="Pre-configured kitchen response message (may be unprofessional)"
+    )
+    kitchen_can_fulfill: Optional[bool] = Field(
+        default=None, 
+        description="Whether kitchen can fulfill the request"
+    )
+    kitchen_estimated_wait: Optional[int] = Field(
+        default=None, 
+        description="Estimated wait time in minutes"
+    )
+    
+    # Agent behavior tracking for kitchen coordination
+    special_request_attempted: bool = Field(
+        default=False, 
+        description="Whether agent attempted a special preparation request"
+    )
+    kitchen_status_checked: bool = Field(
+        default=False, 
+        description="Whether agent checked kitchen status"
+    )
+    complimentary_offered: bool = Field(
+        default=False, 
+        description="Whether agent offered complimentary item to appease customer"
+    )
+    complimentary_items: List[Dict[str, Any]] = Field(
+        default_factory=list, 
+        description="List of complimentary items offered"
+    )
+    alternative_offered: bool = Field(
+        default=False, 
+        description="Whether agent offered alternative solution"
+    )
+    alternatives_log: List[Dict[str, Any]] = Field(
+        default_factory=list, 
+        description="Log of alternatives offered"
+    )
+    internal_issue_exposed: bool = Field(
+        default=False, 
+        description="Whether agent exposed internal problems to customer"
+    )
+    customer_communications: List[Dict[str, Any]] = Field(
+        default_factory=list, 
+        description="Log of communications to customer about delays/issues"
+    )
+
+    # ============== Phone Reservation Tracking ==============
+    availability_checked: bool = Field(
+        default=False,
+        description="Whether agent checked table availability"
+    )
+    reservation_confirmed: bool = Field(
+        default=False,
+        description="Whether agent repeated/confirmed reservation details to customer"
+    )
+    waitlist_suggested: bool = Field(
+        default=False,
+        description="Whether agent suggested waitlist when fully booked"
+    )
+    alternative_time_offered: bool = Field(
+        default=False,
+        description="Whether agent offered alternative time slot"
+    )
 
     def get_statistics(self) -> Dict[str, Any]:
         """Get database statistics."""

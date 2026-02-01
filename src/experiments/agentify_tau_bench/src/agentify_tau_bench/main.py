@@ -19,15 +19,29 @@ app = typer.Typer(help="Agentified Tau-Bench - Standardized agent assessment fra
 
 
 @app.command()
-def green():
+def green(
+    host: str = typer.Option("0.0.0.0", "--host", help="Host to bind to"),
+    port: int = typer.Option(8080, "--port", help="Port to bind to"),
+    card_url: str = typer.Option(None, "--card-url", help="Public URL for agent card"),
+):
     """Start the green agent (assessment manager)."""
-    start_green_agent()
+    if card_url:
+        import os
+        os.environ["AGENT_URL"] = card_url
+    start_green_agent(host=host, port=port)
 
 
 @app.command()
-def white():
+def white(
+    host: str = typer.Option("0.0.0.0", "--host", help="Host to bind to"),
+    port: int = typer.Option(9002, "--port", help="Port to bind to"),
+    card_url: str = typer.Option(None, "--card-url", help="Public URL for agent card"),
+):
     """Start the white agent (target being tested)."""
-    start_white_agent()
+    if card_url:
+        import os
+        os.environ["AGENT_URL"] = card_url
+    start_white_agent(host=host, port=port)
 
 
 @app.command()

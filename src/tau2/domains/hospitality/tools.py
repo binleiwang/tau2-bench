@@ -12,6 +12,7 @@ from tau2.domains.hospitality.data_model import (
     Incident,
     IncidentType,
     Inventory,
+    KitchenStatus,
     MemberTier,
     MenuItem,
     Order,
@@ -50,21 +51,41 @@ class HospitalityTools(ToolKitBase):
 
     # ============== Initialization Methods (for test setup) ==============
     
-    def initialize_order(self, bill_amount: float, table_id: str = "A01") -> str:
-        """Initialize a test order with specified bill amount. Used for test setup."""
+    def initialize_order(
+        self, 
+        bill_amount: float, 
+        table_id: str = "A01", 
+        party_size: int = 2,
+        order_id: Optional[str] = None
+    ) -> str:
+        """Initialize a test order with specified bill amount. Used for test setup.
+        
+        Args:
+            bill_amount: The food subtotal (before sauce bar, tax)
+            table_id: Table number
+            party_size: Number of guests (sauce bar charge = $2 per person)
+            order_id: Optional custom order ID (default: auto-generated)
+        """
         from datetime import datetime
+        sauce_bar_charge = party_size * 2.0  # $2 per person
+        subtotal_with_sauce = bill_amount + sauce_bar_charge
+        
+        final_order_id = order_id if order_id else self._generate_id("ORD", table_id, bill_amount)
+        
         order = Order(
-            order_id=self._generate_id("ORD", table_id, bill_amount),
+            order_id=final_order_id,
             table_id=table_id,
+            party_size=party_size,
             items=[],
             subtotal=bill_amount,
-            tax=bill_amount * 0.0875,
-            total=bill_amount * 1.0875,
+            sauce_bar_charge=sauce_bar_charge,
+            tax=subtotal_with_sauce * 0.0875,
+            total=subtotal_with_sauce * 1.0875,
             status=OrderStatus.IN_PROGRESS,
             created_at="2026-01-01T12:00:00",  # Fixed timestamp for deterministic evaluation
         )
         self.db.orders.append(order)
-        return f"Test order created with bill amount ${bill_amount:.2f}"
+        return f"Test order created: ${bill_amount:.2f} food + ${sauce_bar_charge:.2f} sauce bar ({party_size} guests)"
 
     def initialize_customer_points(self, customer_id: str, points: int, tier: str = "Gold") -> str:
         """Initialize customer with specific points balance. Used for test setup."""
@@ -93,6 +114,179 @@ class HospitalityTools(ToolKitBase):
         """Set whether restaurant is currently in peak hours. Used for test setup."""
         self.db.is_peak_hours = is_peak
         return f"Peak hours set to {is_peak}"
+
+    def set_customer_sms_claim(
+        self,
+        date: str,
+        content: str,
+        missing_terms: Optional[str] = None,
+        discount_value: float = 20.0
+    ) -> str:
+        """Set up a customer's SMS promotion claim for verification. Used for test setup.
+        
+        Args:
+            date: Date the SMS was sent
+            content: Content of the SMS promotion
+            missing_terms: Terms that were omitted (indicates company error)
+            discount_value: Dollar amount of discount claimed
+        """
+        self.db.customer_sms_claim = {
+            "date": date,
+            "content": content,
+            "missing_terms": missing_terms,
+            "discount_value": discount_value,
+            "company_error": missing_terms is not None,
+        }
+        return f"SMS claim set: {content}"
+
+    def set_kitchen_response(
+        self, 
+        response: str, 
+        can_fulfill: Optional[bool] = None, 
+        estimated_wait: Optional[int] = None,
+        status: str = "normal"
+    ) -> str:
+        """
+        Set the kitchen response for testing kitchen coordination scenarios.
+        Used for test setup to simulate various kitchen states.
+        
+        Args:
+            response: The message kitchen staff would say (may be unprofessional)
+            can_fulfill: Whether kitchen can fulfill the request
+            estimated_wait: Estimated wait time in minutes
+            status: Kitchen status (normal, order_overload, understaffed, etc.)
+        """
+        self.db.kitchen_response = response
+        self.db.kitchen_can_fulfill = can_fulfill
+        self.db.kitchen_estimated_wait = estimated_wait
+        self.db.kitchen_status = status
+        return f"Kitchen response configured: status={status}"
+
+    def set_table_membership(self, has_member: bool = False) -> str:
+        """
+        Set whether current table has a linked member account.
+        Used for test setup to simulate membership scenarios.
+        
+        Args:
+            has_member: Whether table already has member linked
+        """
+        if self.db.orders:
+            self.db.orders[-1].has_member = has_member
+        return f"Table membership set: has_member={has_member}"
+
+    def set_customer_mood(self, mood: str = "normal") -> str:
+        """
+        Set customer mood for the current interaction.
+        Used for test setup. Setting this explicitly enables membership promotion testing.
+        
+        Args:
+            mood: Customer mood (normal, upset, rushing, celebrating)
+            
+        Note:
+            Only tasks that explicitly call this method will test membership promotion.
+            Tasks without this initialization are assumed to have existing members.
+        """
+        self.db.customer_mood = mood
+        self.db.mood_explicitly_set = True  # Flag to indicate mood was set for this task
+        return f"Customer mood set: {mood}"
+
+    def set_table_status(self, table_id: str, status: str, party_size: int = 0) -> str:
+        """
+        Set a specific table's status for test setup.
+        
+        Args:
+            table_id: Table ID (e.g., "A1", "B3", "C1")
+            status: Table status - "available", "occupied", "reserved", "cleaning"
+            party_size: Current party size if occupied (default 0)
+        """
+        for table in self.db.tables:
+            if table.table_id == table_id:
+                table.status = TableStatus(status)
+                table.current_party_size = party_size
+                return f"Table {table_id} set to {status} (party: {party_size})"
+        return f"Table {table_id} not found"
+
+    def set_restaurant_occupancy(self, occupancy_level: str) -> str:
+        """
+        Set restaurant-wide occupancy level for test setup.
+        Automatically configures table statuses based on level.
+        
+        Args:
+            occupancy_level: One of:
+                - "empty": All tables available
+                - "light": ~30% occupied (A1-A6 occupied)
+                - "moderate": ~50% occupied (A1-A10, B1-B4 occupied)
+                - "busy": ~75% occupied (A1-A15, B1-B6, C1 occupied)
+                - "full": All tables occupied except C2
+                - "peak_no_large": All tables occupied, no large tables available
+        """
+        # Reset all tables to available first
+        for table in self.db.tables:
+            table.status = TableStatus.AVAILABLE
+            table.current_party_size = 0
+        
+        if occupancy_level == "empty":
+            return "Restaurant set to empty - all tables available"
+        
+        elif occupancy_level == "light":
+            # 30% - occupy A1-A6
+            for table in self.db.tables:
+                if table.table_id in ["A1", "A2", "A3", "A4", "A5", "A6"]:
+                    table.status = TableStatus.OCCUPIED
+                    table.current_party_size = 4
+            return "Restaurant set to light occupancy (~30%)"
+        
+        elif occupancy_level == "moderate":
+            # 50% - occupy A1-A10, B1-B4
+            for table in self.db.tables:
+                if table.table_id.startswith("A") and int(table.table_id[1:]) <= 10:
+                    table.status = TableStatus.OCCUPIED
+                    table.current_party_size = 4
+                elif table.table_id in ["B1", "B2", "B3", "B4"]:
+                    table.status = TableStatus.OCCUPIED
+                    table.current_party_size = 6
+            return "Restaurant set to moderate occupancy (~50%)"
+        
+        elif occupancy_level == "busy":
+            # 75% - occupy A1-A15, B1-B6, C1
+            for table in self.db.tables:
+                if table.table_id.startswith("A") and int(table.table_id[1:]) <= 15:
+                    table.status = TableStatus.OCCUPIED
+                    table.current_party_size = 4
+                elif table.table_id in ["B1", "B2", "B3", "B4", "B5", "B6"]:
+                    table.status = TableStatus.OCCUPIED
+                    table.current_party_size = 6
+                elif table.table_id == "C1":
+                    table.status = TableStatus.OCCUPIED
+                    table.current_party_size = 10
+            return "Restaurant set to busy (~75%)"
+        
+        elif occupancy_level == "full":
+            # All occupied except C2
+            for table in self.db.tables:
+                if table.table_id != "C2":
+                    table.status = TableStatus.OCCUPIED
+                    if table.table_id.startswith("A"):
+                        table.current_party_size = 4
+                    elif table.table_id.startswith("B"):
+                        table.current_party_size = 6
+                    else:
+                        table.current_party_size = 10
+            return "Restaurant set to full - only C2 available"
+        
+        elif occupancy_level == "peak_no_large":
+            # All tables occupied including large tables
+            for table in self.db.tables:
+                table.status = TableStatus.OCCUPIED
+                if table.table_id.startswith("A"):
+                    table.current_party_size = 4
+                elif table.table_id.startswith("B"):
+                    table.current_party_size = 6
+                else:
+                    table.current_party_size = 10
+            return "Restaurant set to peak - no large tables available"
+        
+        return f"Unknown occupancy level: {occupancy_level}"
 
     # ============== End Initialization Methods ==============
 
@@ -232,6 +426,9 @@ class HospitalityTools(ToolKitBase):
         Returns:
             Dictionary with available tables and their capacities.
         """
+        # Track that availability was checked
+        self.db.availability_checked = True
+        
         available_tables = []
 
         # Get reservations for this date/time
@@ -287,13 +484,38 @@ class HospitalityTools(ToolKitBase):
                         }
                     )
 
-        return {
+        # Determine if this is peak hours
+        check_date = datetime.strptime(date_str, "%Y-%m-%d").date()
+        is_weekend = check_date.weekday() >= 5
+        is_holiday = is_federal_holiday(check_date)
+        
+        # Peak hours: Friday 6-9pm, Saturday 5-9pm, Sunday 5-8pm
+        hour = int(time_str.split(":")[0])
+        is_peak = False
+        if check_date.weekday() == 4 and 18 <= hour <= 21:  # Friday
+            is_peak = True
+        elif check_date.weekday() == 5 and 17 <= hour <= 21:  # Saturday
+            is_peak = True
+        elif check_date.weekday() == 6 and 17 <= hour <= 20:  # Sunday
+            is_peak = True
+        
+        result = {
             "party_size": party_size,
             "date": date_str,
             "time": time_str,
             "available_tables": available_tables,
             "total_available": len(available_tables),
+            "is_peak_hours": is_peak,
+            "is_weekend": is_weekend,
+            "is_holiday": is_holiday,
         }
+        
+        if len(available_tables) == 0:
+            result["message"] = "No tables available for this party size and time."
+            if is_peak or is_weekend or is_holiday:
+                result["suggestion"] = "This is a busy period. Typical wait time is 2+ hours. Suggest customer join waitlist on Google Maps or Yelp."
+        
+        return result
 
     @is_tool(ToolType.READ)
     def get_customer_profile(
@@ -427,6 +649,49 @@ class HospitalityTools(ToolKitBase):
         }
 
     @is_tool(ToolType.READ)
+    def verify_promotion_claim(self, promotion_type: str = "sms") -> Dict[str, Any]:
+        """
+        Verify a customer's promotion claim (e.g., SMS promotion, coupon).
+        Use this when customer claims they received a promotion offer.
+        
+        Args:
+            promotion_type: Type of promotion to verify ("sms", "coupon", "email")
+        
+        Returns:
+            Promotion details, validity, and whether company made an error.
+        """
+        today = get_today()
+        is_wkday = is_weekday(today)
+        
+        # Check if there's a customer SMS claim to verify
+        if self.db.customer_sms_claim:
+            claim = self.db.customer_sms_claim
+            missing_terms = claim.get('missing_terms', None)
+            
+            # If company omitted terms, it's their fault - honor the promotion
+            company_error = missing_terms is not None
+            
+            return {
+                "promotion_found": True,
+                "promotion_content": claim.get('content', ''),
+                "promotion_date": claim.get('date', ''),
+                "discount_value": claim.get('discount_value', 0),
+                "actual_terms": f"Full terms include: {missing_terms}" if missing_terms else "No additional terms",
+                "missing_terms_in_communication": missing_terms,
+                "company_communication_error": company_error,
+                "is_valid_today": is_wkday or company_error,  # Valid if weekday OR company made error
+                "recommendation": "HONOR the promotion - company error in SMS communication. Apply discount within your authority." if company_error else (
+                    "Promotion valid - apply discount" if is_wkday else "Promotion only valid on weekdays"
+                ),
+                "current_day": today.strftime("%A"),
+            }
+        
+        return {
+            "promotion_found": False,
+            "message": "No promotion record found. Ask customer for details.",
+        }
+
+    @is_tool(ToolType.READ)
     def check_item_inventory(self, item_name: str) -> Dict[str, Any]:
         """
         Check inventory level for a specific item (gifts, merchandise, etc.).
@@ -456,17 +721,49 @@ class HospitalityTools(ToolKitBase):
         raise ValueError(f"Inventory item '{item_name}' not found")
 
     @is_tool(ToolType.READ)
-    def get_reservation_details(self, reservation_id: str) -> Reservation:
+    def get_reservation_details(
+        self, 
+        reservation_id: Optional[str] = None,
+        phone: Optional[str] = None,
+        customer_name: Optional[str] = None,
+        table_id: Optional[str] = None
+    ) -> Reservation:
         """
-        Get details of a specific reservation.
+        Look up a reservation by ID, phone, name, or table number.
+        For dine-in customers, use table_id or customer info - no need to ask for reservation ID.
 
         Args:
-            reservation_id: The reservation ID to look up.
+            reservation_id: The reservation ID (optional)
+            phone: Customer phone number (optional)
+            customer_name: Customer name (optional, partial match)
+            table_id: Table number for seated customers (optional)
 
         Returns:
             Reservation details.
         """
-        return self._get_reservation_by_id(reservation_id)
+        if reservation_id:
+            return self._get_reservation_by_id(reservation_id)
+        
+        # Search by table_id first (most common for dine-in)
+        if table_id:
+            for res in self.db.reservations:
+                if res.table_id == table_id and res.status == ReservationStatus.SEATED:
+                    return res
+        
+        # Search by phone
+        if phone:
+            for res in self.db.reservations:
+                if res.phone == phone:
+                    return res
+        
+        # Search by name (partial match)
+        if customer_name:
+            name_lower = customer_name.lower()
+            for res in self.db.reservations:
+                if name_lower in res.customer_name.lower():
+                    return res
+        
+        raise ValueError("Reservation not found. Provide reservation_id, phone, customer_name, or table_id.")
 
     @is_tool(ToolType.READ)
     def get_order_details(self, order_id: Optional[str] = None) -> Dict[str, Any]:
@@ -575,6 +872,7 @@ class HospitalityTools(ToolKitBase):
         )
 
         self.db.reservations.append(reservation)
+        self.db.reservation_confirmed = True  # Track that reservation was created
 
         logger.info(f"Created reservation {reservation_id} for {customer_name}")
 
@@ -587,6 +885,56 @@ class HospitalityTools(ToolKitBase):
                 f"Party size: {party_size}",
             ]
             + (["Birthday cake will be stored appropriately"] if has_cake else []),
+        }
+
+    @is_tool(ToolType.WRITE)
+    def suggest_waitlist(self, reason: str = "fully_booked") -> Dict[str, Any]:
+        """
+        Suggest customer join online waitlist when restaurant is fully booked.
+        
+        Args:
+            reason: Reason for suggesting waitlist (e.g., "fully_booked", "peak_hours")
+        
+        Returns:
+            Waitlist information and online options.
+        """
+        self.db.waitlist_suggested = True
+        
+        return {
+            "message": "Suggested customer join online waitlist",
+            "reason": reason,
+            "options": [
+                "Google Maps - search 'Berkeley Hot Pot' and click 'Join Waitlist'",
+                "Yelp - visit our Yelp page and click 'Join Waitlist'"
+            ],
+            "note": "During peak hours (Friday 6-9pm, Saturday 5-9pm, Sunday 5-8pm), typical wait is 2+ hours."
+        }
+
+    @is_tool(ToolType.WRITE)
+    def offer_alternative_time(
+        self, 
+        original_time: str, 
+        alternative_times: List[str],
+        reason: str = "requested_time_unavailable"
+    ) -> Dict[str, Any]:
+        """
+        Offer alternative time slots when requested time is unavailable.
+        
+        Args:
+            original_time: The originally requested time
+            alternative_times: List of available alternative times
+            reason: Reason for offering alternatives
+        
+        Returns:
+            Alternative time options.
+        """
+        self.db.alternative_time_offered = True
+        
+        return {
+            "message": f"Offered alternative times instead of {original_time}",
+            "original_request": original_time,
+            "alternatives": alternative_times,
+            "reason": reason
         }
 
     @is_tool(ToolType.WRITE)
@@ -901,26 +1249,7 @@ class HospitalityTools(ToolKitBase):
             "reward": reward,
         }
 
-    @is_tool(ToolType.WRITE)
-    def call_manager(self, reason: str) -> str:
-        """
-        Call a manager to the table to handle the situation.
-        Use this when:
-         - Customer explicitly asks for a manager
-         - Issue requires authority beyond your current role
-         - Compensation needed exceeds your authority ($10 for Server)
-
-        Args:
-            reason: Brief reason why manager is needed.
-
-        Returns:
-            Confirmation that manager is coming.
-        """
-        # Track the escalation
-        self.db.escalation_made = True
-        self.db.escalation_to = "manager"
-        self.db.escalation_reason = reason
-        return "Manager has been notified and is coming to your table."
+    # call_manager removed to enforce use of escalate_with_solution for structured reporting
 
     # ============== NEW: Structured Solution Tools ==============
 
@@ -1011,17 +1340,20 @@ class HospitalityTools(ToolKitBase):
         compensation_details: str,
     ) -> Dict[str, Any]:
         """
-        Resolve an issue by offering compensation (within your authority).
-        Use this for issues you CAN handle without escalation.
-        No need to specify order - you can see the customer's table and order on your iPad.
+        Resolve an issue by offering FUTURE or INTANGIBLE compensation.
+        
+        DO NOT use this for:
+        - Current bill discounts (Use `apply_discount` instead)
+        - Free food/drinks now (Use `add_complimentary_item` instead)
+        
+        Use this ONLY for:
+        - "voucher" (future credit/gift card)
+        - "priority_reservation" (next visit)
+        - "points" (loyalty points adjustment)
 
         Args:
-            compensation_type: Type of compensation:
-                - "comp_item" (free item under $10)
-                - "discount" (percentage off, max 12% for Server)
-                - "round_off" (small amount off, max $10 for Server)
-                - "voucher" (future credit)
-            compensation_details: Specific details (item name, percentage, amount, etc.)
+            compensation_type: Type of compensation ("voucher", "priority_reservation", "points")
+            compensation_details: Specific details (amount, date, etc.)
 
         Returns:
             Confirmation of compensation offered.
@@ -1094,13 +1426,14 @@ class HospitalityTools(ToolKitBase):
             raise ValueError("damage_severity must be 'minor' or 'major'")
 
     @is_tool(ToolType.WRITE)
-    def expedite_order(self, order_id: Optional[str], reason: str) -> Dict[str, Any]:
+    def expedite_order(self, reason: str, order_id: Optional[str] = None) -> Dict[str, Any]:
         """
         Request kitchen to prioritize/rush an order.
+        For dine-in customers, use their table number - no need to ask for order ID.
 
         Args:
-            order_id: The order to expedite (optional - expedites current table's order if None)
             reason: Why the order needs to be rushed
+            order_id: The order to expedite (optional - expedites current table's order if None)
 
         Returns:
             Confirmation that order has been expedited.
@@ -1115,14 +1448,15 @@ class HospitalityTools(ToolKitBase):
         }
 
     @is_tool(ToolType.WRITE)
-    def remake_dish(self, order_id: Optional[str], item_name: str, reason: str) -> Dict[str, Any]:
+    def remake_dish(self, item_name: str, reason: str, order_id: Optional[str] = None) -> Dict[str, Any]:
         """
         Request kitchen to remake a dish.
+        For dine-in customers, use their table number - no need to ask for order ID.
 
         Args:
-            order_id: The order containing the dish
             item_name: Name of the dish to remake
             reason: Why the dish needs to be remade (wrong order, quality issue, etc.)
+            order_id: The order containing the dish (optional - uses current table's order if None)
 
         Returns:
             Confirmation that dish will be remade.
@@ -1184,6 +1518,275 @@ class HospitalityTools(ToolKitBase):
             "item_id": item_id,
             "allergy": allergy,
             "marked_as": "safe" if is_safe else "unsafe",
+        }
+
+    # ============== Membership Tools ==============
+    # These tools support testing membership promotion behavior
+    
+    @is_tool(ToolType.READ)
+    def check_table_membership(self, table_id: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Check if the current table has a linked member account.
+        Use this before offering membership signup to avoid redundant offers.
+        
+        Args:
+            table_id: Table to check (optional - uses current table if None)
+        
+        Returns:
+            has_member: Whether table has linked member
+            member_name: Member name if exists
+            
+        Note:
+            If customer_mood was not explicitly set (remains default "normal" without
+            explicit initialization), this returns has_member=True to indicate the table
+            is already a member (no need to promote membership).
+        """
+        self.db.membership_checked = True
+        
+        # Simplified logic: If customer_mood was not explicitly set via set_customer_mood,
+        # treat as existing member (no membership promotion needed for this task)
+        # Only tasks with explicit mood setup are testing membership promotion
+        if not self.db.mood_explicitly_set:
+            return {"has_member": True, "note": "Default - existing member assumed"}
+        
+        if self.db.orders:
+            order = self.db.orders[-1]
+            if order.has_member and order.customer_id:
+                # Try to get customer info
+                try:
+                    customer = self._get_customer_by_id(order.customer_id)
+                    return {
+                        "has_member": True,
+                        "member_name": customer.name,
+                        "member_tier": customer.tier.value,
+                        "points": customer.points
+                    }
+                except ValueError:
+                    return {"has_member": True, "member_name": "Member"}
+            return {"has_member": order.has_member}
+        
+        return {"has_member": False}
+
+    @is_tool(ToolType.WRITE)
+    def offer_membership_signup(
+        self, 
+        pitch_type: str = "standard",
+        benefits_mentioned: Optional[List[str]] = None
+    ) -> Dict[str, Any]:
+        """
+        Offer membership signup to the customer.
+        Only offer when table doesn't have a member and customer mood is appropriate.
+        
+        Args:
+            pitch_type: Type of pitch (standard, checkout, celebration)
+            benefits_mentioned: List of benefits mentioned (points, discounts, birthday_voucher, etc.)
+        
+        Returns:
+            offered: Whether offer was made
+        """
+        self.db.membership_offered = True
+        
+        return {
+            "offered": True,
+            "pitch_type": pitch_type,
+            "benefits_mentioned": benefits_mentioned or ["points", "birthday_voucher"]
+        }
+
+    # ============== Kitchen Coordination Tools ==============
+    # These tools support testing internal coordination scenarios
+    
+    @is_tool(ToolType.READ)
+    def check_kitchen_status(self, order_id: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Check the current status of an order in the kitchen or general kitchen status.
+        Use this ONLY for CURRENT in-progress orders, NOT for past complaints.
+        
+        Args:
+            order_id: Optional order ID to check specific order status
+        
+        Returns:
+            kitchen_response: Direct response from kitchen staff (may be unprofessional)
+            estimated_wait: Estimated wait time if available
+            status: Current kitchen operational status
+        """
+        # Track repeated calls to prevent infinite loops
+        if not hasattr(self.db, '_kitchen_check_count'):
+            self.db._kitchen_check_count = 0
+        self.db._kitchen_check_count += 1
+        
+        self.db.kitchen_status_checked = True
+        
+        # After 2 calls, warn that repeated checking won't help
+        if self.db._kitchen_check_count > 2:
+            return {
+                "kitchen_response": "You've already checked kitchen status. Status hasn't changed. If this is about a PAST order/complaint, use get_order_details instead to look up historical records.",
+                "estimated_wait": self.db.kitchen_estimated_wait,
+                "status": self.db.kitchen_status,
+                "can_fulfill": self.db.kitchen_can_fulfill,
+                "warning": "Repeated kitchen status checks detected. Consider a different approach.",
+            }
+        
+        return {
+            "kitchen_response": self.db.kitchen_response or "Order is being prepared, about 10-15 minutes.",
+            "estimated_wait": self.db.kitchen_estimated_wait,
+            "status": self.db.kitchen_status,
+            "can_fulfill": self.db.kitchen_can_fulfill,
+        }
+
+    @is_tool(ToolType.WRITE)
+    def request_special_preparation(
+        self, request_type: str, details: str
+    ) -> Dict[str, Any]:
+        """
+        Request kitchen to do special preparation (e.g., peel shrimp, fresh-cut meat, allergy accommodation).
+        
+        Args:
+            request_type: Type of request (e.g., "peel_shrimp", "fresh_cut", "allergy_check", "custom_prep")
+            details: Specific details of the request
+        
+        Returns:
+            kitchen_response: Direct response from kitchen staff (may be unprofessional)
+            can_fulfill: Whether request can be fulfilled (may be None if unclear from response)
+        """
+        self.db.special_request_attempted = True
+        
+        return {
+            "kitchen_response": self.db.kitchen_response or "We can do that, give us a few minutes.",
+            "can_fulfill": self.db.kitchen_can_fulfill,
+            "estimated_time": self.db.kitchen_estimated_wait,
+        }
+
+    @is_tool(ToolType.WRITE)
+    def offer_complimentary_drink(
+        self, drink_type: str, reason: str
+    ) -> Dict[str, Any]:
+        """
+        Offer a complimentary drink to calm/appease the customer while resolving their issue.
+        Use this to manage customer expectations during delays.
+        
+        Args:
+            drink_type: Type of drink (e.g., "seasonal_special", "soft_drink", "tea", "yakult")
+            reason: Reason for offering (e.g., "wait_time", "service_recovery", "apology")
+        
+        Returns:
+            success: Whether the offer was made
+        """
+        self.db.complimentary_offered = True
+        self.db.compensation_offered = True
+        self.db.complimentary_items.append({
+            "type": drink_type,
+            "reason": reason,
+            "category": "drink"
+        })
+        
+        return {
+            "success": True,
+            "message": f"Complimentary {drink_type} offered to customer",
+            "reason": reason
+        }
+
+    @is_tool(ToolType.WRITE)
+    def offer_complimentary_appetizer(
+        self, item_type: str, reason: str
+    ) -> Dict[str, Any]:
+        """
+        Offer a complimentary appetizer/snack to appease the customer during delays.
+        
+        Args:
+            item_type: Type of item (e.g., "edamame", "pickled_vegetables", "fruit_plate")
+            reason: Reason for offering
+        
+        Returns:
+            success: Whether the offer was made
+        """
+        self.db.complimentary_offered = True
+        self.db.compensation_offered = True
+        self.db.complimentary_items.append({
+            "type": item_type,
+            "reason": reason,
+            "category": "appetizer"
+        })
+        
+        return {
+            "success": True,
+            "message": f"Complimentary {item_type} offered to customer",
+            "reason": reason
+        }
+
+    @is_tool(ToolType.WRITE)
+    def communicate_delay_to_customer(
+        self, message: str, tone: str = "apologetic"
+    ) -> Dict[str, Any]:
+        """
+        Communicate with customer about delays or issues.
+        IMPORTANT: Never expose internal problems (kitchen attitude, staff issues) to customers.
+        
+        Args:
+            message: What to tell the customer (should be professional, not expose internal issues)
+            tone: Tone of communication (e.g., "apologetic", "empathetic", "professional")
+        
+        Returns:
+            delivered: Whether message was communicated
+        """
+        # Check for forbidden phrases that expose internal issues
+        forbidden_phrases = [
+            "kitchen refused", "staff won't", "cook said no",
+            "they're not cooperating", "kitchen attitude", "chef quit",
+            "staff walked out", "they said", "kitchen staff", "cook is",
+            "they won't", "back of house", "boh", "they're being",
+            "not my fault", "their fault", "kitchen's fault"
+        ]
+        
+        exposed = any(phrase in message.lower() for phrase in forbidden_phrases)
+        
+        if exposed:
+            self.db.internal_issue_exposed = True
+        
+        self.db.customer_communications.append({
+            "message": message,
+            "tone": tone,
+            "exposed_internal": exposed
+        })
+        
+        return {
+            "delivered": True,
+            "tone": tone
+        }
+
+    @is_tool(ToolType.WRITE)
+    def offer_alternative_solution(
+        self, 
+        original_request: str, 
+        alternative: str, 
+        compensation: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Offer an alternative when original request cannot be fulfilled.
+        Use this when kitchen cannot complete a special request.
+        
+        Args:
+            original_request: What customer originally wanted
+            alternative: What you're offering instead
+            compensation: Any additional compensation (optional, e.g., "10% discount", "free dessert")
+        
+        Returns:
+            offered: Whether alternative was offered
+        """
+        self.db.alternative_offered = True
+        self.db.alternatives_log.append({
+            "original": original_request,
+            "alternative": alternative,
+            "compensation": compensation
+        })
+        
+        if compensation:
+            self.db.compensation_offered = True
+        
+        return {
+            "offered": True,
+            "original_request": original_request,
+            "alternative_offered": alternative,
+            "compensation": compensation
         }
 
     # ============== Assertion Methods (for deterministic evaluation) ==============
@@ -1388,6 +1991,118 @@ class HospitalityTools(ToolKitBase):
             # Host cases can go either way
             return True
         return False
+
+    # ============== Kitchen Coordination Assertions ==============
+    # These assertions support testing internal coordination scenarios
+
+    def assert_no_internal_issues_exposed(self) -> bool:
+        """
+        Assert that agent never exposed internal problems to customer.
+        This checks that agent did not mention kitchen attitude, staff issues, etc.
+        """
+        return not self.db.internal_issue_exposed
+
+    def assert_alternative_offered(self) -> bool:
+        """Assert that agent offered an alternative when original request failed."""
+        return self.db.alternative_offered
+
+    def assert_complimentary_offered(self) -> bool:
+        """Assert that agent offered complimentary item to appease customer."""
+        return self.db.complimentary_offered
+
+    def assert_special_request_attempted(self) -> bool:
+        """Assert that agent at least tried to fulfill the special request."""
+        return self.db.special_request_attempted
+
+    def assert_kitchen_status_checked(self) -> bool:
+        """Assert that agent checked kitchen status when handling delay."""
+        return self.db.kitchen_status_checked
+
+    def assert_professional_communication(self) -> bool:
+        """Assert all communications were professional (no internal blame exposed)."""
+        for comm in self.db.customer_communications:
+            if comm.get("exposed_internal", False):
+                return False
+        return True
+
+    def assert_customer_appeased(self) -> bool:
+        """
+        Assert that agent took steps to appease customer during difficult situation.
+        This checks that at least one of: complimentary offered, alternative offered, or compensation offered.
+        """
+        return (
+            self.db.complimentary_offered 
+            or self.db.alternative_offered 
+            or self.db.compensation_offered
+        )
+
+    # ============== Membership Assertions ==============
+    
+    def assert_membership_offered(self) -> bool:
+        """Assert that agent offered membership signup."""
+        return self.db.membership_offered
+
+    def assert_membership_not_offered(self) -> bool:
+        """Assert that agent correctly did NOT offer membership (for upset customers or existing members)."""
+        return not self.db.membership_offered
+
+    def assert_membership_checked_before_offer(self) -> bool:
+        """Assert that agent checked membership status before offering signup."""
+        if self.db.membership_offered:
+            return self.db.membership_checked
+        return True  # If not offered, no need to check
+
+    def assert_appropriate_membership_behavior(self) -> bool:
+        """
+        Assert appropriate membership behavior based on context:
+        - If table has member: should NOT offer
+        - If customer mood is upset/rushing: should NOT offer
+        - If normal mood and no member: SHOULD offer
+        """
+        has_member = False
+        if self.db.orders:
+            has_member = self.db.orders[-1].has_member
+        
+        mood = self.db.customer_mood
+        
+        # Should NOT offer if: has member OR upset/rushing
+        should_not_offer = has_member or mood in ["upset", "rushing"]
+        
+        if should_not_offer:
+            return not self.db.membership_offered
+        else:
+            # Normal mood, no member - should offer (but not strictly required)
+            return True  # Don't penalize for not offering in normal cases
+
+    # ============== Phone Reservation Assertions ==============
+
+    def assert_reservation_created(self) -> bool:
+        """Assert that a reservation was successfully created."""
+        # Check if any new reservation was added during this interaction
+        return len(self.db.reservations) > 1  # More than the default one in db.json
+
+    def assert_reservation_details_confirmed(self) -> bool:
+        """Assert that reservation details were repeated back to customer."""
+        return self.db.reservation_confirmed
+
+    def assert_availability_checked(self) -> bool:
+        """Assert that agent checked table availability before booking."""
+        return self.db.availability_checked
+
+    def assert_party_size_within_limit(self, max_size: int = 20) -> bool:
+        """Assert that reservation party size is within weekend/holiday limits."""
+        if self.db.reservations:
+            latest = self.db.reservations[-1]
+            return latest.party_size <= max_size
+        return True
+
+    def assert_waitlist_suggested(self) -> bool:
+        """Assert that waitlist was suggested when fully booked."""
+        return self.db.waitlist_suggested
+
+    def assert_alternative_time_offered(self) -> bool:
+        """Assert that alternative time was offered when requested time unavailable."""
+        return self.db.alternative_time_offered
 
 
 if __name__ == "__main__":

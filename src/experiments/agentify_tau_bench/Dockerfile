@@ -3,9 +3,10 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# Install system dependencies
+# Install system dependencies (including curl for healthcheck)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
 # Install uv for fast Python package management
@@ -34,5 +35,6 @@ ENV HOST=0.0.0.0
 ENV AGENT_PORT=9001
 ENV AGENT_URL=http://localhost:9001
 
-# Default command: start the green agent
-CMD ["uv", "run", "tau-bench-agent", "green"]
+# Use ENTRYPOINT so docker-compose command becomes arguments
+ENTRYPOINT ["uv", "run", "tau-bench-agent", "green"]
+CMD []
