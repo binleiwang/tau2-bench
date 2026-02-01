@@ -65,7 +65,17 @@ uv sync
 
 ## Docker Build & Run (End-to-End)
 
-Build and run the Green Agent with Docker:
+### Option 1: Pull Pre-built Image (Recommended)
+
+```bash
+# Pull the pre-built image
+docker pull ghcr.io/binleiwang/tau2-hospitality:v1
+
+# Run the Green Agent
+docker run -e OPENAI_API_KEY=your_key_here -p 9001:9001 ghcr.io/binleiwang/tau2-hospitality:v1
+```
+
+### Option 2: Build from Source
 
 ```bash
 # From the tau2-bench root directory
